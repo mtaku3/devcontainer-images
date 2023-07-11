@@ -186,7 +186,7 @@ async function pushImage(definitionId, variant, repo, release, updateLatest,
 }
 
 async function flattenBaseImage(baseImageTag, flattenedBaseImageTag, pushImages) {
-    const flattenedImageCaptureGroups = /([^\/]+)\/(.+):(.+)/.exec(flattenedBaseImageTag);
+    const flattenedImageCaptureGroups = /([^/]+)\/(.+):(.+)/.exec(flattenedBaseImageTag);
     if (await isImageAlreadyPublished(flattenedImageCaptureGroups[1], flattenedImageCaptureGroups[2], flattenedImageCaptureGroups[3])) {
         console.log('(*) Flattened base image already published.')
         return;
@@ -218,7 +218,7 @@ async function isDefinitionVersionAlreadyPublished(definitionId, release, regist
     const tagsToCheck = configUtils.getTagList(definitionId, release, false, registry, registryPath, variant);
     const tagParts = tagsToCheck[0].split(':');
     const registryName = registry.replace(/\..*/, '');
-    return await isImageAlreadyPublished(registryName, tagParts[0].replace(/[^\/]+\//, ''), tagParts[1]);
+    return await isImageAlreadyPublished(registryName, tagParts[0].replace(/[^/]+\//, ''), tagParts[1]);
 }
 
 async function isImageAlreadyPublished(registryName, repositoryName, tagName) {
