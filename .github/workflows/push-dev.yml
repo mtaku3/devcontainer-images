@@ -1,0 +1,70 @@
+name: Build and push "dev" images
+
+on: 
+  workflow_dispatch:
+  schedule:
+    - cron: '0 14 * * MON'
+
+jobs:
+  build-and-push:
+    name: Build and push
+    if: "github.ref == 'refs/heads/main'"
+    strategy:
+      matrix:
+        page: [1]
+        page-total: [1]
+      fail-fast: false
+    runs-on: devcontainer-image-builder-ubuntu
+    steps:
+    - name: Free more space
+      id: free_space 
+      run: |
+        set -e
+        # Ensure enough space is available for build
+        sudo apt-get autoremove -y
+        sudo apt-get clean -y
+        sudo rm -rf /usr/share/dotnet
+
+    - name: Checkout
+      id: checkout
+      uses: actions/checkout@v1
+
+    - name: Build and push dev tags
+      id: build_and_push
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        REGISTRY: ${{ secrets.REGISTRY }}
+        REGISTRY_BASE_PATH: ${{ secrets.REGISTRY_BASE_PATH }}
+        STUB_REGISTRY: ${{ secrets.STUB_REGISTRY }}
+        STUB_REGISTRY_BASE_PATH: ${{ secrets.STUB_REGISTRY_BASE_PATH }}
+        SECONDARY_REGISTRY_BASE_PATH: ${{ secrets.SECONDARY_REGISTRY_BASE_PATH }}
+      run: |
+        set -e
+
+        # Build and push dev images
+        yarn install
+        npm install -g @devcontainers/cli
+        GIT_BRANCH=$(echo "${{ github.ref }}" | grep -oP 'refs/(heads|tags)/\K(.+)')
+        if [ "$GIT_BRANCH" == "" ]; then 
+            GIT_BRANCH=main
+        fi
+        build/vscdc push  --page ${{ matrix.page }} \
+                          --pageTotal ${{ matrix.page-total }} \
+                          --release $GIT_BRANCH \
+                          --github-repo ${{ github.repository }} \
+                          --registry "$REGISTRY" \
+                          --registry-path "$REGISTRY_BASE_PATH" \
+                          --stub-registry "$STUB_REGISTRY" \
+                          --stub-registry-path "$STUB_REGISTRY_BASE_PATH" \
+                          --secondary-registry-path "$SECONDARY_REGISTRY_BASE_PATH"
+
+  image-info:
+    name: Trigger info extraction
+    needs: [build-and-push]
+    uses: devcontainers/images/.github/workflows/version-history.yml@main
+    with:
+      release: "${{ github.ref }}"
+      cg: "true"
+      push: "true"
+      overwrite: "true"
+    secrets: inherit
