@@ -9,6 +9,10 @@ const asyncUtils = require('./utils/async');
 const configUtils = require('./utils/config');
 const prep = require('./prep');
 const builderName = 'dev-containers-builder';
+const octokit = require('./utils/octokit');
+const { RequestError } = require('@octokit/request-error');
+const ghcr = require('./utils/ghcr');
+const { isGHCRError } = require('./utils/ghcr');
 
 async function push(repo, release, updateLatest, registry, registryPath, stubRegistry,
     stubRegistryPath, pushImages, prepOnly, definitionsToSkip, page, pageTotal, replaceImages, definitionId) {
@@ -56,15 +60,6 @@ async function push(repo, release, updateLatest, registry, registryPath, stubReg
         await asyncUtils.forEach(definitionsToPush, async (currentJob) => {
             stagingFolder = await configUtils.getStagingFolder(release);
             await configUtils.loadConfig(stagingFolder);
-
-            const registryName = registry.replace(/\.azurecr\.io.*/, '');
-            const spawnOpts = { stdio: 'inherit', shell: true };
-            await asyncUtils.spawn('az', [
-                'acr',
-                'login',
-                '--name',
-                registryName
-            ], spawnOpts);
 
             console.log(`**** Pushing ${currentJob['id']}: ${currentJob['variant']} ${release} ****`);
             await pushImage(
@@ -217,33 +212,43 @@ async function isDefinitionVersionAlreadyPublished(definitionId, release, regist
     // See if image already exists
     const tagsToCheck = configUtils.getTagList(definitionId, release, false, registry, registryPath, variant);
     const tagParts = tagsToCheck[0].split(':');
-    const registryName = registry.replace(/\..*/, '');
-    return await isImageAlreadyPublished(registryName, tagParts[0].replace(/[^/]+\//, ''), tagParts[1]);
+    return await isImageAlreadyPublished(registry, tagParts[0].replace(/[^/]+\//, ''), tagParts[1]);
 }
 
-async function isImageAlreadyPublished(registryName, repositoryName, tagName) {
-    registryName = registryName.replace(/\.azurecr\.io.*/, '');
-    // Check if repository exists
-    const repositoriesOutput = await asyncUtils.spawn('az', ['acr', 'repository', 'list', '--name', registryName], { shell: true, stdio: 'pipe' });
-    const repositories = JSON.parse(repositoriesOutput);
-    if (repositories.indexOf(repositoryName) < 0) {
-        console.log('(*) Repository does not exist. Image version has not been published yet.')
-        return false;
+async function isImageAlreadyPublished(registryName, packageName, tagName) {
+    if (registryName !== 'ghcr.io') {
+        throw new Error(`Only ghcr.io is supported at this time.`);
     }
 
-    // Assuming repository exists, check if tag exists
-    const tagListOutput = await asyncUtils.spawn('az', ['acr', 'repository', 'show-tags',
-        '--name', registryName,
-        '--repository', repositoryName,
-        '--query', `"[?@=='${tagName}']"`
-    ], { shell: true, stdio: 'pipe' });
-    const tagList = JSON.parse(tagListOutput);
-    if (tagList.length > 0) {
-        console.log('(*) Image version has already been published.')
-        return true;
+    // Check if package exists
+    try {
+        var package = await octokit.getInstance().rest.packages.getPackageForAuthenticatedUser({
+            package_type: 'container',
+            package_name: packageName
+        });
+    } catch (ex) {
+        if (ex instanceof RequestError && ex.status === 404) {
+            console.log('(*) Package does not exist. Image version has not been published yet.')
+            return false;
+        } else {
+            throw ex;
+        }
     }
-    console.log('(*) Image version has not been published yet.')
-    return false;
+
+    // Assuming package exists, check if tag exists
+    try {
+        await ghcr.getInstance().get(`${package.owner.login}/${package.name}/manifests/${tagName}`);
+    } catch (ex) {
+        if (isGHCRError(ex) && ex.response.status === 404) {
+            console.log('(*) Image version has not been published yet.')
+            return false;
+        } else {
+            throw ex;
+        }
+    }
+
+    console.log('(*) Image version has already been published.')
+    return true;
 }
 
 async function createOrUseBuilder() {

@@ -6,6 +6,8 @@
 const path = require('path');
 const asyncUtils = require('./utils/async');
 const jsonc = require('jsonc').jsonc;
+const octokit = require('./utils/octokit');
+const ghcr = require('./utils/ghcr');
 
 async function patch(patchPath, registry, registryPath) {
     patchPath = path.resolve(patchPath);
@@ -26,7 +28,7 @@ async function patch(patchPath, registry, registryPath) {
     if (patchConfig.deleteUntaggedImages && patchConfig.imageIds) {
         await deleteUntaggedImages(patchConfig.imageIds, registry);
     }
-    
+
     console.log('\n(*) Done!')
 }
 
@@ -36,17 +38,16 @@ async function patchImage(imageId, patchPath, dockerFilePath, bumpVersion, regis
 
     // Get repository and tag list for imageId
     let repoAndTagList = await getImageRepositoryAndTags(imageId, registry);
-    if(repoAndTagList.length === 0) {
+    if (repoAndTagList.length === 0) {
         console.log('(*) No tags to patch. Skipping.');
         return;
     }
 
-    console.log(`(*) Tags to update: ${
-            JSON.stringify(repoAndTagList.reduce((prev, repoAndTag) => { return prev + repoAndTag.repository + ':' + repoAndTag.tag + ' ' }, ''), undefined, 4)
+    console.log(`(*) Tags to update: ${JSON.stringify(repoAndTagList.reduce((prev, repoAndTag) => { return prev + repoAndTag.repository + ':' + repoAndTag.tag + ' ' }, ''), undefined, 4)
         }`);
 
     // Bump breakfix number of it applies
-    if(bumpVersion) {
+    if (bumpVersion) {
         repoAndTagList = updateVersionTags(repoAndTagList);
     }
 
@@ -59,7 +60,7 @@ async function patchImage(imageId, patchPath, dockerFilePath, bumpVersion, regis
     let retry = false;
     do {
         try {
-            await asyncUtils.spawn('docker', [ 
+            await asyncUtils.spawn('docker', [
                 'build',
                 '--pull',
                 '--build-arg',
@@ -76,7 +77,7 @@ async function patchImage(imageId, patchPath, dockerFilePath, bumpVersion, regis
             } else {
                 throw ex;
             }
-        }    
+        }
     } while (retry);
 
     // Push updates
@@ -120,95 +121,119 @@ async function deleteUnpatchedImages(patchPath, registry) {
     return await deleteUntaggedImages(patchConfig.imageIds, registry);
 }
 
-async function deleteUntaggedImages(imageIds, registry) {
+async function deleteUntaggedImages(imageIds, registryName) {
+    if (registryName !== 'ghcr.io') {
+        throw new Error(`Only ghcr.io is supported at this time.`);
+    }
 
     console.log('\n*** Deleting untagged images ***');
-    // ACR registry name is the registry minus .azurecr.io
-    const registryName = registry.replace(/\..*/, '');
 
-    const manifests = await getImageManifests(imageIds, registry);
+    const manifests = await getImageManifests(imageIds, registryName);
 
     console.log(`(*) Manifests to delete: ${JSON.stringify(manifests, undefined, 4)}`);
 
-    const spawnOpts = { stdio: 'inherit', shell: true };
     await asyncUtils.forEach(manifests, async (manifest) => {
         if (manifest.tags.length > 0) {
             console.log(`(!) Skipping ${manifest.digest} because it has tags: ${manifest.tags}`);
             return;
         }
+
         const fullImageId = `${manifest.repository}@${manifest.digest}`;
         console.log(`(*) Deleting ${fullImageId}...`);
+
         // Pull and build patched tag
-        await asyncUtils.spawn('az', [
-            'acr',
-            'repository',
-            'delete',
-            '--yes',
-            '--name', registryName,
-            '--image', fullImageId
-        ], spawnOpts);
+        await ghcr.getInstance().delete(`/v2/${manifest.repository}/manifests/${manifest.digest}`);
     });
 
     console.log('(*) Done deleting manifests!')
 }
 
 // Find tags for image
-async function getImageRepositoryAndTags(imageId, registry) {
-    // ACR registry name is the registry minus .azurecr.io
-    const registryName = registry.replace(/\..*/, '');
+async function getImageRepositoryAndTags(imageId, registryName) {
+    if (registryName !== 'ghcr.io') {
+        throw new Error(`Only ghcr.io is supported at this time.`);
+    }
 
     // Get list of repositories
-    console.log(`(*) Getting repository list for ACR "${registryName}"...`)
-    const repositoryListOutput = await asyncUtils.spawn('az',
-        ['acr', 'repository', 'list', '--name', registryName],
-        { shell: true, stdio: 'pipe' });
-    const repositoryList = JSON.parse(repositoryListOutput);
+    console.log("(*) Getting repository list");
+    const repositoryList = await octokit.getInstance().paginate(octokit.getInstance().rest.packages.listPackagesForAuthenticatedUser, {
+        package_type: 'container'
+    });
 
     let repoAndTagList = [];
     await asyncUtils.forEach(repositoryList, async (repository) => {
-        console.log(`(*) Checking in for "${imageId}" in "${repository}"...`);
-        const tagListOutput = await asyncUtils.spawn('az',
-            ['acr', 'repository', 'show-tags', '--detail', '--name', registryName, '--repository', repository, "--query", `"[?digest=='${imageId}'].name"`],
-            { shell: true, stdio: 'pipe' });
-        const additionalTags = JSON.parse(tagListOutput);
-        repoAndTagList = repoAndTagList.concat(additionalTags.map((tag) => {
-            return { 
-                repository:repository,
-                tag:tag
-            };
-        }));
+        console.log(`(*) Checking in for "${imageId}" in "${repository.name}"...`);
+        const tagList = await octokit.getInstance().paginate(octokit.getInstance().rest.packages.getAllPackageVersionsForPackageOwnedByAuthenticatedUser, {
+            package_type: 'container',
+            package_name: repository.name
+        });
+
+        await asyncUtils.forEach(tagList, async (tag) => {
+            const manifest = await octokit.getInstance().rest.packages.getPackageVersionForAuthenticatedUser({
+                package_type: 'container',
+                package_name: repository.name,
+                package_version_id: tag.id
+            });
+
+            const digest = manifest.name;
+            if (digest !== imageId) {
+                return;
+            }
+
+            const additionalTags = manifest.metadata.container.tags;
+            repoAndTagList = repoAndTagList.concat(additionalTags.map((tag) => {
+                return {
+                    repository: `${repository.owner.login}/${repository.name}`,
+                    tag: tag
+                };
+            }));
+        });
     });
     return repoAndTagList;
 }
 
-async function getImageManifests(imageIds, registry) {
-    // ACR registry name is the registry minus .azurecr.io
-    const registryName = registry.replace(/\..*/, '');
+async function getImageManifests(imageIds, registryName) {
+    if (registryName !== 'ghcr.io') {
+        throw new Error(`Only ghcr.io is supported at this time.`);
+    }
 
     let manifests = [];
 
     // Get list of repositories
-    console.log(`(*) Getting repository list for ACR "${registryName}"...`)
-    const repositoryListOutput = await asyncUtils.spawn('az',
-        ['acr', 'repository', 'list', '--name', registryName],
-        { shell: true, stdio: 'pipe' });
-    const repositoryList = JSON.parse(repositoryListOutput);
+    console.log(`(*) Getting repository list`)
+    const repositoryList = await octokit.getInstance().paginate(octokit.getInstance().rest.packages.listPackagesForAuthenticatedUser, {
+        package_type: 'container'
+    });
 
     // Query each repository for images, then add any tags found to the list
-    const query = imageIds.reduce((prev, current) => {
-        return prev ? `${prev} || digest=='${current}'` : `"[?digest=='${current}'`;
-    }, null) + '] | []"';
     await asyncUtils.forEach(repositoryList, async (repository) => {
-        console.log(`(*) Getting manifests from "${repository}"...`);
-        const registryManifestListOutput = await asyncUtils.spawn('az',
-            ['acr', 'repository', 'show-manifests', '--name', registryName, '--repository', repository, "--query", query],
-            { shell: true, stdio: 'pipe' });
-        let registryManifestList = JSON.parse(registryManifestListOutput);
-        registryManifestList = registryManifestList.map((manifest) => {
-            manifest.repository = repository;
-            return manifest;
+        console.log(`(*) Getting tags from "${repository.name}"...`);
+
+        const tagList = await octokit.getInstance().paginate(octokit.getInstance().rest.packages.getAllPackageVersionsForPackageOwnedByAuthenticatedUser, {
+            package_type: 'container',
+            package_name: repository.name
         });
-        manifests = manifests.concat(registryManifestList);
+
+        await asyncUtils.forEach(tagList, async (tag) => {
+            console.log(`(*) Getting manifests from "${repository}"...`);
+
+            const manifest = await octokit.getInstance().rest.packages.getPackageVersionForAuthenticatedUser({
+                package_type: 'container',
+                package_name: repository.name,
+                package_version_id: tag.id
+            });
+
+            const digest = manifest.name;
+            if (!imageIds.includes(digest)) {
+                return;
+            }
+
+            manifests.push({
+                repository: `${repository.owner.login}/${repository.name}`,
+                digest: digest,
+                tags: manifest.metadata.container.tags
+            });
+        });
     });
 
     return manifests;

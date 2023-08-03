@@ -1,14 +1,13 @@
 {
-	"containerRegistry": "devcon.azurecr.io",
-	"containerRegistryPath": "public/devcontainers",
-	"secondaryContainerRegistryPath": "public/vscode/devcontainers",
-	"stubRegistry": "mcr.microsoft.com",
-	"stubRegistryPath": "devcontainers",
-	"githubRepoName": "devcontainers/images",
+	"containerRegistry": "ghcr.io",
+	"containerRegistryPath": "mtaku3/devcontainer-images",
+	"stubRegistry": "ghcr.io",
+	"stubRegistryPath": "mtaku3/devcontainer-images",
+	"githubRepoName": "mtaku3/devcontainer-images",
 	"containersPathInRepo": "src",
 	"historyFolderName": "history",
-	"historyUrlPrefix": "https://github.com/devcontainers/images/tree/main/src/",
-	"repositoryUrl": "https://github.com/devcontainers/images",
+	"historyUrlPrefix": "https://github.com/mtaku3/devcontainer-images/tree/main/src/",
+	"repositoryUrl": "https://github.com/mtaku3/devcontainer-images",
 	"imageLabelPrefix": "dev.containers",
 	"imageBuildConfigFile": "manifest.json",
 	"devContainerJsonPreamble": "For format details, see https://aka.ms/devcontainer.json. For config options, see the README at:\n// ",
@@ -18,11 +17,7 @@
 		"LICENSE",
 		"package.json"
 	],
-	"needsDedicatedPage": [
-		"universal",
-		"php",
-		"python"
-	],
+	"needsDedicatedPage": [],
 	"flattenBaseImage": [],
 	"poolKeys": {
 		"https://dl.yarnpkg.com/debian": "https://dl.yarnpkg.com/debian/pubkey.gpg",
